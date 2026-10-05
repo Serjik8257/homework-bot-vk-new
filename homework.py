@@ -7,6 +7,8 @@ import requests
 import vk_api
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
@@ -32,7 +34,17 @@ class InvalidCurrentDateError(ValueError):
 
 def check_tokens():
     """Проверяет, что все необходимые переменные окружения заданы."""
-    return all([PRACTICUM_TOKEN, VK_TOKEN, VK_USER_ID])
+    token_names = ('PRACTICUM_TOKEN', 'VK_TOKEN', 'VK_USER_ID')
+    missing_tokens = [
+        name for name in token_names if not globals()[name]
+    ]
+    if missing_tokens:
+        logger.critical(
+            'Не заданы обязательные переменные окружения: %s.',
+            ', '.join(missing_tokens)
+        )
+        return False
+    return True
 
 
 def configure_logging():
@@ -54,10 +66,10 @@ def send_message(vk, message):
             message=message,
             random_id=0
         )
-    except Exception:
-        logging.exception('Не удалось отправить сообщение в VK.')
+    except (vk_api.exceptions.VkApiError, requests.RequestException) as error:
+        logger.exception('Не удалось отправить сообщение в VK: %s', error)
     else:
-        logging.debug('Успешно отправлено сообщение в VK: %s', message)
+        logger.debug('Успешно отправлено сообщение в VK: %s', message)
 
 
 def get_api_answer(timestamp):
@@ -71,20 +83,17 @@ def get_api_answer(timestamp):
             params=params,
             timeout=REQUEST_TIMEOUT
         )
+        if response.status_code != HTTPStatus.OK:
+            raise ConnectionError(
+                f'API вернуло статус {response.status_code}'
+            )
+        return response.json()
+    except requests.exceptions.JSONDecodeError as error:
+        raise ValueError('API вернуло некорректный JSON.') from error
     except requests.RequestException as error:
         raise ConnectionError(
             f'Не удалось запросить API: {error}'
         ) from error
-
-    if response.status_code != HTTPStatus.OK:
-        raise ConnectionError(
-            f'API вернуло статус {response.status_code}'
-        )
-
-    try:
-        return response.json()
-    except (requests.exceptions.JSONDecodeError, ValueError) as error:
-        raise ValueError('API вернуло некорректный JSON.') from error
 
 
 def check_response(response):
@@ -99,7 +108,7 @@ def check_response(response):
         raise TypeError('Значение homeworks должно быть списком.')
 
     current_date = response.get('current_date')
-    if type(current_date) is not int:
+    if not isinstance(current_date, int):
         raise InvalidCurrentDateError(
             'В ответе API отсутствует корректная временная метка current_date.'
         )
@@ -114,7 +123,8 @@ def parse_status(homework):
     except (KeyError, TypeError) as error:
         raise ValueError(
             'В ответе API отсутствуют нужные данные '
-            'или получен неизвестный статус.'
+            'или получен неизвестный статус: '
+            f'{error}'
         ) from error
 
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
@@ -125,18 +135,6 @@ def main():
     configure_logging()
 
     if not check_tokens():
-        required_tokens = {
-            'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
-            'VK_TOKEN': VK_TOKEN,
-            'VK_USER_ID': VK_USER_ID,
-        }
-        missing_tokens = [
-            name for name, value in required_tokens.items() if not value
-        ]
-        logging.critical(
-            'Не заданы обязательные переменные окружения: %s.',
-            ', '.join(missing_tokens)
-        )
         raise SystemExit('Проверьте настройки в файле .env.')
 
     # Создаем сессию для бота
@@ -144,30 +142,32 @@ def main():
     vk = vk_session.get_api()
     timestamp = int(time.time())
 
-    logging.info('Бот запущен.')
+    logger.info('Бот запущен.')
 
     while True:
+        sending_message = False
         try:
             response = get_api_answer(timestamp)
             check_response(response)
 
             if response['homeworks']:
-                for homework in response['homeworks']:
-                    message = parse_status(homework)
-                    send_message(vk, message)
+                homework = response['homeworks'][-1]
+                message = parse_status(homework)
+                sending_message = True
+                send_message(vk, message)
+                sending_message = False
             else:
-                logging.debug('Новых статусов домашних работ нет.')
+                logger.debug('Новых статусов домашних работ нет.')
 
             timestamp = response['current_date']
 
         except InvalidCurrentDateError as error:
-            # Не сдвигаем временную метку и не отправляем техническое
-            # предупреждение пользователю в VK.
-            logging.error('%s Сохраняем прежнюю временную метку.', error)
+            logger.error('%s Сохраняем прежнюю временную метку.', error)
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
-            logging.exception(message)
-            send_message(vk, message)
+            logger.exception(message)
+            if not sending_message:
+                send_message(vk, message)
         finally:
             time.sleep(RETRY_PERIOD)
 
