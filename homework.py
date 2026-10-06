@@ -40,11 +40,10 @@ def check_tokens():
     ]
     if missing_tokens:
         logger.critical(
-            'Не заданы обязательные переменные окружения: %s.',
-            ', '.join(missing_tokens)
+            'Не заданы обязательные переменные окружения: '
+            f'{", ".join(missing_tokens)}.'
         )
-        return False
-    return True
+    return not missing_tokens
 
 
 def configure_logging():
@@ -66,10 +65,10 @@ def send_message(vk, message):
             message=message,
             random_id=0
         )
-    except (vk_api.exceptions.VkApiError, requests.RequestException) as error:
-        logger.exception('Не удалось отправить сообщение в VK: %s', error)
+    except vk_api.exceptions.VkApiError as error:
+        logger.exception(f'Не удалось отправить сообщение в VK: {error}')
     else:
-        logger.debug('Успешно отправлено сообщение в VK: %s', message)
+        logger.debug(f'Успешно отправлено сообщение в VK: {message}')
 
 
 def get_api_answer(timestamp):
@@ -116,17 +115,29 @@ def check_response(response):
 
 def parse_status(homework):
     """Формирует сообщение об изменении статуса домашней работы."""
-    try:
-        homework_name = homework['homework_name']
-        status = homework['status']
-        verdict = HOMEWORK_VERDICTS[status]
-    except (KeyError, TypeError) as error:
-        raise ValueError(
-            'В ответе API отсутствуют нужные данные '
-            'или получен неизвестный статус: '
-            f'{error}'
-        ) from error
+    if not isinstance(homework, dict):
+        raise TypeError(
+            'Данные домашней работы должны быть словарём, '
+            f'получен {type(homework).__name__}.'
+        )
 
+    for key in ('homework_name', 'status'):
+        if key not in homework:
+            raise KeyError(
+                f'В данных домашней работы отсутствует ключ {key}.'
+            )
+
+    homework_name = homework['homework_name']
+    status = homework['status']
+    if not isinstance(status, str):
+        raise TypeError(f'Статус должен быть строкой, получено {status!r}.')
+    if status not in HOMEWORK_VERDICTS:
+        raise ValueError(
+            f'Неизвестный статус домашней работы "{homework_name}": '
+            f'{status!r}.'
+        )
+
+    verdict = HOMEWORK_VERDICTS[status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
@@ -145,7 +156,7 @@ def main():
     logger.info('Бот запущен.')
 
     while True:
-        sending_message = False
+        message = None
         try:
             response = get_api_answer(timestamp)
             check_response(response)
@@ -153,21 +164,22 @@ def main():
             if response['homeworks']:
                 homework = response['homeworks'][-1]
                 message = parse_status(homework)
-                sending_message = True
-                send_message(vk, message)
-                sending_message = False
             else:
                 logger.debug('Новых статусов домашних работ нет.')
 
             timestamp = response['current_date']
 
         except InvalidCurrentDateError as error:
-            logger.error('%s Сохраняем прежнюю временную метку.', error)
+            logger.error(f'{error} Сохраняем прежнюю временную метку.')
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
             logger.exception(message)
-            if not sending_message:
+
+        try:
+            if message is not None:
                 send_message(vk, message)
+        except Exception as error:
+            logger.exception(f'Не удалось отправить сообщение в VK: {error}')
         finally:
             time.sleep(RETRY_PERIOD)
 
