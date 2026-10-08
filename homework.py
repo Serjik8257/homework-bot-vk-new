@@ -141,6 +141,29 @@ def parse_status(homework):
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
+def check_updates(vk, timestamp):
+    """Проверяет обновления, уведомляет пользователя и возвращает метку."""
+    try:
+        response = get_api_answer(timestamp)
+        check_response(response)
+
+        if not response['homeworks']:
+            logger.debug('Новых статусов домашних работ нет.')
+            return response['current_date']
+
+        message = parse_status(response['homeworks'][-1])
+    except InvalidCurrentDateError as error:
+        logger.error(f'{error} Сохраняем прежнюю временную метку.')
+    except Exception as error:
+        message = f'Сбой в работе программы: {error}'
+        logger.exception(message)
+        send_message(vk, message)
+    else:
+        send_message(vk, message)
+        return response['current_date']
+    return timestamp
+
+
 def main():
     """Основная логика работы бота."""
     configure_logging()
@@ -148,7 +171,6 @@ def main():
     if not check_tokens():
         raise SystemExit('Проверьте настройки в файле .env.')
 
-    # Создаем сессию для бота
     vk_session = vk_api.VkApi(token=VK_TOKEN)
     vk = vk_session.get_api()
     timestamp = int(time.time())
@@ -156,28 +178,8 @@ def main():
     logger.info('Бот запущен.')
 
     while True:
-        message = None
         try:
-            response = get_api_answer(timestamp)
-            check_response(response)
-
-            if response['homeworks']:
-                homework = response['homeworks'][-1]
-                message = parse_status(homework)
-            else:
-                logger.debug('Новых статусов домашних работ нет.')
-
-            timestamp = response['current_date']
-
-        except InvalidCurrentDateError as error:
-            logger.error(f'{error} Сохраняем прежнюю временную метку.')
-        except Exception as error:
-            message = f'Сбой в работе программы: {error}'
-            logger.exception(message)
-
-        try:
-            if message is not None:
-                send_message(vk, message)
+            timestamp = check_updates(vk, timestamp)
         except Exception as error:
             logger.exception(f'Не удалось отправить сообщение в VK: {error}')
         finally:
