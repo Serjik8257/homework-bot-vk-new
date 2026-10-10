@@ -65,7 +65,7 @@ def send_message(vk, message):
             message=message,
             random_id=0
         )
-    except vk_api.exceptions.VkApiError as error:
+    except Exception as error:
         logger.exception(f'Не удалось отправить сообщение в VK: {error}')
     else:
         logger.debug(f'Успешно отправлено сообщение в VK: {message}')
@@ -152,6 +152,7 @@ def check_updates(vk, timestamp):
             return response['current_date']
 
         message = parse_status(response['homeworks'][-1])
+        send_message(vk, message)
     except InvalidCurrentDateError as error:
         logger.error(f'{error} Сохраняем прежнюю временную метку.')
     except Exception as error:
@@ -159,7 +160,6 @@ def check_updates(vk, timestamp):
         logger.exception(message)
         send_message(vk, message)
     else:
-        send_message(vk, message)
         return response['current_date']
     return timestamp
 
@@ -178,12 +178,8 @@ def main():
     logger.info('Бот запущен.')
 
     while True:
-        try:
-            timestamp = check_updates(vk, timestamp)
-        except Exception as error:
-            logger.exception(f'Не удалось отправить сообщение в VK: {error}')
-        finally:
-            time.sleep(RETRY_PERIOD)
+        timestamp = check_updates(vk, timestamp)
+        time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
